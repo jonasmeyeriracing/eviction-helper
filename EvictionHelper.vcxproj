@@ -89,7 +89,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\eviction_helper.cpp" />
     <ClCompile Include="imgui\imgui.cpp" />
     <ClCompile Include="imgui\imgui_demo.cpp" />
     <ClCompile Include="imgui\imgui_draw.cpp" />
@@ -99,7 +99,7 @@
     <ClCompile Include="imgui\backends\imgui_impl_dx12.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\shared_memory.h" />
+    <ClInclude Include="src\eviction_helper_shared.h" />
     <ClInclude Include="imgui\imgui.h" />
     <ClInclude Include="imgui\backends\imgui_impl_win32.h" />
     <ClInclude Include="imgui\backends\imgui_impl_dx12.h" />

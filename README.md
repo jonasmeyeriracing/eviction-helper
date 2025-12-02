@@ -30,10 +30,10 @@ Or build from command line:
 Run `EvictionHelper.exe` and use the slider to set target VRAM usage. The application will allocate 2048x2048 RGBA8 render targets until the target is reached.
 
 ### Controlled from another application
-Include `src/shared_memory.h` in your project and use the shared memory interface:
+Include `src/eviction_helper_shared.h` in your project and use the shared memory interface:
 
 ```cpp
-#include "shared_memory.h"
+#include "eviction_helper_shared.h"
 
 EvictionHelperSharedMemory sharedMem;
 if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
