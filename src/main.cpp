@@ -17,6 +17,7 @@
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx12.h"
+#include "shared_memory.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -64,15 +65,15 @@ struct VRAMRenderTarget {
 
 std::vector<VRAMRenderTarget> g_VRAMRenderTargets;
 ComPtr<ID3D12DescriptorHeap> g_VRAMRtvHeap;
-float g_TargetVRAMUsageGB = 0.0f;
-UINT64 g_CurrentVRAMAllocation = 0;
 constexpr UINT64 RENDER_TARGET_SIZE_MB = 64; // Each RT is 64MB (2048x2048 RGBA8)
 constexpr UINT RT_WIDTH = 2048;
 constexpr UINT RT_HEIGHT = 2048;
 
-// Memory info
-DXGI_QUERY_VIDEO_MEMORY_INFO g_LocalMemoryInfo = {};
-DXGI_QUERY_VIDEO_MEMORY_INFO g_NonLocalMemoryInfo = {};
+// Shared memory for inter-process communication
+EvictionHelperSharedMemory g_SharedMem = {};
+float g_SliderVRAMUsageGB = 0.0f; // Local copy for ImGui slider
+
+// Adapter for memory queries
 ComPtr<IDXGIAdapter3> g_Adapter;
 
 // Timing
@@ -92,6 +93,13 @@ void QueryMemoryInfo();
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
+    // Create shared memory for inter-process communication
+    if (!EvictionHelper_CreateSharedMemory(&g_SharedMem)) {
+        MessageBoxA(NULL, "Failed to create shared memory", "Error", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    g_SharedMem.pData->IsRunning = 1;
+
     // Register window class
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -161,6 +169,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 
         if (!running) break;
 
+        // Check for shutdown request from shared memory
+        if (g_SharedMem.pData->RequestShutdown) {
+            running = false;
+            break;
+        }
+
         // Frame timing for 30 FPS cap
         auto currentTime = std::chrono::high_resolution_clock::now();
         double elapsedMs = std::chrono::duration<double, std::milli>(currentTime - lastFrameTime).count();
@@ -174,12 +188,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         }
         lastFrameTime = std::chrono::high_resolution_clock::now();
 
-        // Query memory info
+        // Query memory info and update shared memory
         QueryMemoryInfo();
 
-        // Update VRAM allocation based on slider
-        UINT64 targetBytes = static_cast<UINT64>(g_TargetVRAMUsageGB * 1024.0f * 1024.0f * 1024.0f);
-        if (targetBytes != g_CurrentVRAMAllocation) {
+        // Sync slider with shared memory (shared memory takes priority if changed externally)
+        UINT64 sharedTargetBytes = g_SharedMem.pData->TargetVRAMUsageBytes;
+        UINT64 sliderTargetBytes = static_cast<UINT64>(g_SliderVRAMUsageGB * 1024.0 * 1024.0 * 1024.0);
+
+        // If shared memory was changed externally, update slider
+        if (sharedTargetBytes != sliderTargetBytes) {
+            g_SliderVRAMUsageGB = static_cast<float>(sharedTargetBytes / (1024.0 * 1024.0 * 1024.0));
+        }
+
+        // Update VRAM allocation based on shared memory target
+        UINT64 targetBytes = g_SharedMem.pData->TargetVRAMUsageBytes;
+        if (targetBytes != g_SharedMem.pData->CurrentVRAMAllocationBytes) {
             AllocateVRAMRenderTargets(targetBytes);
         }
 
@@ -192,28 +215,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         ImGui::Begin("VRAM Eviction Helper", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
         ImGui::Text("Target VRAM Usage:");
-        ImGui::SliderFloat("GB", &g_TargetVRAMUsageGB, 0.0f, 16.0f, "%.2f GB");
+        if (ImGui::SliderFloat("GB", &g_SliderVRAMUsageGB, 0.0f, 16.0f, "%.2f GB")) {
+            // Slider changed, update shared memory
+            g_SharedMem.pData->TargetVRAMUsageBytes = static_cast<uint64_t>(g_SliderVRAMUsageGB * 1024.0 * 1024.0 * 1024.0);
+        }
 
         ImGui::Separator();
-        ImGui::Text("Allocated Render Targets: %zu", g_VRAMRenderTargets.size());
-        ImGui::Text("Allocated VRAM: %.2f GB", g_CurrentVRAMAllocation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("Allocated Render Targets: %u", g_SharedMem.pData->AllocatedRenderTargetCount);
+        ImGui::Text("Allocated VRAM: %.2f GB", g_SharedMem.pData->CurrentVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
 
         ImGui::Separator();
         ImGui::Text("Video Memory Info (Local/VRAM):");
-        ImGui::Text("  Budget: %.2f GB", g_LocalMemoryInfo.Budget / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Current Usage: %.2f GB", g_LocalMemoryInfo.CurrentUsage / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Available for Reservation: %.2f GB", g_LocalMemoryInfo.AvailableForReservation / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Current Reservation: %.2f GB", g_LocalMemoryInfo.CurrentReservation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Budget: %.2f GB", g_SharedMem.pData->LocalBudget / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Current Usage: %.2f GB", g_SharedMem.pData->LocalCurrentUsage / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Available for Reservation: %.2f GB", g_SharedMem.pData->LocalAvailableForReservation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Current Reservation: %.2f GB", g_SharedMem.pData->LocalCurrentReservation / (1024.0 * 1024.0 * 1024.0));
 
         ImGui::Separator();
         ImGui::Text("Video Memory Info (Non-Local/System):");
-        ImGui::Text("  Budget: %.2f GB", g_NonLocalMemoryInfo.Budget / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Current Usage: %.2f GB", g_NonLocalMemoryInfo.CurrentUsage / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Available for Reservation: %.2f GB", g_NonLocalMemoryInfo.AvailableForReservation / (1024.0 * 1024.0 * 1024.0));
-        ImGui::Text("  Current Reservation: %.2f GB", g_NonLocalMemoryInfo.CurrentReservation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Budget: %.2f GB", g_SharedMem.pData->NonLocalBudget / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Current Usage: %.2f GB", g_SharedMem.pData->NonLocalCurrentUsage / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Available for Reservation: %.2f GB", g_SharedMem.pData->NonLocalAvailableForReservation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("  Current Reservation: %.2f GB", g_SharedMem.pData->NonLocalCurrentReservation / (1024.0 * 1024.0 * 1024.0));
 
         ImGui::Separator();
         ImGui::Text("Frame Rate: 30 FPS (fixed)");
+        ImGui::Text("Shared Memory: Active");
 
         ImGui::End();
 
@@ -293,6 +320,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     g_VRAMRenderTargets.clear();
     g_VRAMRtvHeap.Reset();
     CleanupDeviceD3D();
+
+    // Cleanup shared memory
+    if (g_SharedMem.pData) {
+        g_SharedMem.pData->IsRunning = 0;
+    }
+    EvictionHelper_CloseSharedMemory(&g_SharedMem);
 
     DestroyWindow(hWnd);
     UnregisterClassW(wc.lpszClassName, hInstance);
@@ -697,8 +730,11 @@ void AllocateVRAMRenderTargets(UINT64 targetBytes)
         g_VRAMRenderTargets.push_back(std::move(vramRT));
     }
 
-    // Update current allocation
-    g_CurrentVRAMAllocation = g_VRAMRenderTargets.size() * rtSize;
+    // Update shared memory with current allocation
+    if (g_SharedMem.pData) {
+        g_SharedMem.pData->CurrentVRAMAllocationBytes = g_VRAMRenderTargets.size() * rtSize;
+        g_SharedMem.pData->AllocatedRenderTargetCount = static_cast<uint32_t>(g_VRAMRenderTargets.size());
+    }
 }
 
 void RenderToAllVRAMTargets()
@@ -721,8 +757,23 @@ void RenderToAllVRAMTargets()
 
 void QueryMemoryInfo()
 {
-    if (g_Adapter) {
-        g_Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &g_LocalMemoryInfo);
-        g_Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &g_NonLocalMemoryInfo);
+    if (g_Adapter && g_SharedMem.pData) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO localInfo = {};
+        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalInfo = {};
+
+        g_Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo);
+        g_Adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalInfo);
+
+        // Update shared memory with local (VRAM) info
+        g_SharedMem.pData->LocalBudget = localInfo.Budget;
+        g_SharedMem.pData->LocalCurrentUsage = localInfo.CurrentUsage;
+        g_SharedMem.pData->LocalAvailableForReservation = localInfo.AvailableForReservation;
+        g_SharedMem.pData->LocalCurrentReservation = localInfo.CurrentReservation;
+
+        // Update shared memory with non-local (system) info
+        g_SharedMem.pData->NonLocalBudget = nonLocalInfo.Budget;
+        g_SharedMem.pData->NonLocalCurrentUsage = nonLocalInfo.CurrentUsage;
+        g_SharedMem.pData->NonLocalAvailableForReservation = nonLocalInfo.AvailableForReservation;
+        g_SharedMem.pData->NonLocalCurrentReservation = nonLocalInfo.CurrentReservation;
     }
 }

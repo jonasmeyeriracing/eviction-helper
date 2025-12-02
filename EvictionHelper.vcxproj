@@ -99,6 +99,7 @@
     <ClCompile Include="imgui\backends\imgui_impl_dx12.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\shared_memory.h" />
     <ClInclude Include="imgui\imgui.h" />
     <ClInclude Include="imgui\backends\imgui_impl_win32.h" />
     <ClInclude Include="imgui\backends\imgui_impl_dx12.h" />
