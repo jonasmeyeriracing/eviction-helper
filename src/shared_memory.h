@@ -35,6 +35,9 @@ struct EvictionHelperSharedData
     // Status flags
     uint32_t IsRunning;         // Set to 1 while eviction-helper is running
     uint32_t RequestShutdown;   // Set to 1 from controller to request shutdown
+
+    // Frame counter - increments each frame, use to verify app is running
+    uint64_t FrameCount;
 };
 
 // Helper struct for managing shared memory handle and pointer

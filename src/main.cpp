@@ -308,6 +308,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         UINT64 fenceValue = g_FenceValue++;
         g_CommandQueue->Signal(g_Fence.Get(), fenceValue);
         frameCtx->FenceValue = fenceValue;
+
+        // Increment frame counter for external monitoring
+        g_SharedMem.pData->FrameCount++;
     }
 
     WaitForGpu();
