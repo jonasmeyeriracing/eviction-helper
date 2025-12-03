@@ -71,7 +71,6 @@ constexpr UINT RT_HEIGHT = 2048;
 
 // Shared memory for inter-process communication
 EvictionHelperSharedMemory g_SharedMem = {};
-float g_SliderVRAMUsageGB = 0.0f; // Local copy for ImGui slider
 
 // Adapter for memory queries
 ComPtr<IDXGIAdapter3> g_Adapter;
@@ -191,17 +190,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         // Query memory info and update shared memory
         QueryMemoryInfo();
 
-        // Sync slider with shared memory (shared memory takes priority if changed externally)
-        UINT64 sharedTargetBytes = g_SharedMem.pData->TargetVRAMUsageBytes;
-        UINT64 sliderTargetBytes = static_cast<UINT64>(g_SliderVRAMUsageGB * 1024.0 * 1024.0 * 1024.0);
-
-        // If shared memory was changed externally, update slider
-        if (sharedTargetBytes != sliderTargetBytes) {
-            g_SliderVRAMUsageGB = static_cast<float>(sharedTargetBytes / (1024.0 * 1024.0 * 1024.0));
-        }
-
-        // Update VRAM allocation based on shared memory target
-        UINT64 targetBytes = g_SharedMem.pData->TargetVRAMUsageBytes;
+        // Update VRAM allocation based on shared memory target (MB -> bytes)
+        UINT64 targetBytes = static_cast<UINT64>(g_SharedMem.pData->TargetVRAMUsageMB) * 1024ULL * 1024ULL;
         if (targetBytes != g_SharedMem.pData->CurrentVRAMAllocationBytes) {
             AllocateVRAMRenderTargets(targetBytes);
         }
@@ -215,9 +205,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         ImGui::Begin("VRAM Eviction Helper", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
         ImGui::Text("Target VRAM Usage:");
-        if (ImGui::SliderFloat("GB", &g_SliderVRAMUsageGB, 0.0f, 16.0f, "%.2f GB")) {
-            // Slider changed, update shared memory
-            g_SharedMem.pData->TargetVRAMUsageBytes = static_cast<uint64_t>(g_SliderVRAMUsageGB * 1024.0 * 1024.0 * 1024.0);
+        int targetMB = static_cast<int>(g_SharedMem.pData->TargetVRAMUsageMB);
+        if (ImGui::SliderInt("MB", &targetMB, 0, 16384, "%d MB")) {
+            g_SharedMem.pData->TargetVRAMUsageMB = static_cast<uint32_t>(targetMB);
         }
 
         ImGui::Separator();

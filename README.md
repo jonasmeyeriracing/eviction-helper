@@ -37,8 +37,8 @@ Include `src/eviction_helper_shared.h` in your project and use the shared memory
 
 EvictionHelperSharedMemory sharedMem;
 if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
-    // Set target VRAM usage (in bytes)
-    sharedMem.pData->TargetVRAMUsageBytes = 4ULL * 1024 * 1024 * 1024; // 4 GB
+    // Set target VRAM usage (in megabytes)
+    sharedMem.pData->TargetVRAMUsageMB = 4096; // 4 GB
 
     // Read current state
     printf("Current VRAM usage: %llu bytes\n", sharedMem.pData->LocalCurrentUsage);
@@ -67,7 +67,7 @@ Name: `Local\EvictionHelperSharedMemory`
 struct EvictionHelperSharedData
 {
     // Input
-    uint64_t TargetVRAMUsageBytes;      // Set desired VRAM allocation
+    uint32_t TargetVRAMUsageMB;         // Set desired VRAM allocation in MB
 
     // Output - Allocation state
     uint64_t CurrentVRAMAllocationBytes;

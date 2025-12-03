@@ -12,8 +12,9 @@
 // Shared data structure between eviction-helper and controlling applications
 struct EvictionHelperSharedData
 {
-    // Input: Set this from the controlling application (in bytes)
-    uint64_t TargetVRAMUsageBytes;
+    // Input: Set this from the controlling application (in megabytes)
+    uint32_t TargetVRAMUsageMB;
+    uint32_t _padding1;
 
     // Output: Current allocation state
     uint64_t CurrentVRAMAllocationBytes;
