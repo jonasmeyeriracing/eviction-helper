@@ -67,7 +67,7 @@ Name: `Local\EvictionHelperSharedMemory`
 struct EvictionHelperSharedData
 {
     // Input
-    uint32_t TargetVRAMUsageMB;         // Set desired VRAM allocation in MB
+    int TargetVRAMUsageMB;              // Set desired VRAM allocation in MB
 
     // Output - Allocation state
     uint64_t CurrentVRAMAllocationBytes;

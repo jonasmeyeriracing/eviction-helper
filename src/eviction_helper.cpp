@@ -205,10 +205,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         ImGui::Begin("VRAM Eviction Helper", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
         ImGui::Text("Target VRAM Usage:");
-        int targetMB = static_cast<int>(g_SharedMem.pData->TargetVRAMUsageMB);
-        if (ImGui::SliderInt("MB", &targetMB, 0, 16384, "%d MB")) {
-            g_SharedMem.pData->TargetVRAMUsageMB = static_cast<uint32_t>(targetMB);
-        }
+        ImGui::SliderInt("MB", &g_SharedMem.pData->TargetVRAMUsageMB, 0, 16384, "%d MB");
 
         ImGui::Separator();
         ImGui::Text("Allocated Render Targets: %u", g_SharedMem.pData->AllocatedRenderTargetCount);
