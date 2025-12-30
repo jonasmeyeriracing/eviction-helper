@@ -5,9 +5,15 @@ A D3D12 application for testing VRAM eviction behavior on Windows. Allocates a c
 ## Features
 
 - Allocates offscreen render targets to consume VRAM (0-16 GB configurable)
-- Renders to all allocated targets every frame to keep memory resident
-- Sets resource residency priority to HIGH
+- **Active VRAM**: Rendered to every frame to keep memory resident
+- **Unused VRAM**: Allocated but not rendered to (tests eviction of idle resources)
+- **Configurable residency priority** (Minimum/Low/Normal/High/Maximum) for:
+  - Active VRAM allocations
+  - Unused VRAM allocations
+  - D3D12 Heaps
+- Priority changes apply to existing allocations in real-time
 - Displays real-time DXGI video memory statistics via ImGui
+- Shows memory breakdown by priority level
 - Runs at fixed 30 FPS
 - **Shared memory interface** for control from external applications
 
@@ -27,7 +33,7 @@ Or build from command line:
 ## Usage
 
 ### Standalone
-Run `EvictionHelper.exe` and use the slider to set target VRAM usage. The application will allocate 2048x2048 RGBA8 render targets until the target is reached.
+Run `EvictionHelper.exe` and use the sliders to set target VRAM usage for both active and unused memory. The application allocates 2048x2048 RGBA8 render targets until the targets are reached. Use the priority dropdowns to control residency priority for each memory type.
 
 ### Controlled from another application
 Include `src/eviction_helper_shared.h` in your project and use the shared memory interface:
@@ -38,14 +44,23 @@ Include `src/eviction_helper_shared.h` in your project and use the shared memory
 EvictionHelperSharedMemory sharedMem;
 if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
     // Set target VRAM usage (in megabytes)
-    sharedMem.pData->TargetVRAMUsageMB = 4096; // 4 GB
+    sharedMem.pData->TargetVRAMUsageMB = 4096;        // 4 GB active VRAM
+    sharedMem.pData->TargetUnusedVRAMUsageMB = 2048;  // 2 GB unused VRAM
+
+    // Set residency priorities (0=Minimum, 1=Low, 2=Normal, 3=High, 4=Maximum)
+    sharedMem.pData->ActiveVRAMPriority = EVICTION_HELPER_PRIORITY_HIGH;
+    sharedMem.pData->UnusedVRAMPriority = EVICTION_HELPER_PRIORITY_MINIMUM;
+    sharedMem.pData->HeapPriority = EVICTION_HELPER_PRIORITY_NORMAL;
 
     // Read current state
     printf("Current VRAM usage: %llu bytes\n", sharedMem.pData->LocalCurrentUsage);
     printf("VRAM budget: %llu bytes\n", sharedMem.pData->LocalBudget);
-    printf("Allocated: %llu bytes in %u render targets\n",
+    printf("Active: %llu bytes in %u render targets\n",
            sharedMem.pData->CurrentVRAMAllocationBytes,
            sharedMem.pData->AllocatedRenderTargetCount);
+    printf("Unused: %llu bytes in %u render targets\n",
+           sharedMem.pData->CurrentUnusedVRAMAllocationBytes,
+           sharedMem.pData->AllocatedUnusedRenderTargetCount);
 
     // Verify app is running by checking frame counter changes
     uint64_t lastFrame = sharedMem.pData->FrameCount;
@@ -64,14 +79,31 @@ if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
 Name: `Local\EvictionHelperSharedMemory`
 
 ```cpp
+// Priority values (maps to D3D12_RESIDENCY_PRIORITY)
+#define EVICTION_HELPER_PRIORITY_MINIMUM  0
+#define EVICTION_HELPER_PRIORITY_LOW      1
+#define EVICTION_HELPER_PRIORITY_NORMAL   2
+#define EVICTION_HELPER_PRIORITY_HIGH     3
+#define EVICTION_HELPER_PRIORITY_MAXIMUM  4
+
 struct EvictionHelperSharedData
 {
-    // Input
-    int TargetVRAMUsageMB;              // Set desired VRAM allocation in MB
+    // Input - Memory targets
+    int TargetVRAMUsageMB;              // Active VRAM allocation in MB (rendered each frame)
+    int TargetUnusedVRAMUsageMB;        // Unused VRAM allocation in MB (allocated but idle)
 
-    // Output - Allocation state
+    // Input - Residency priorities (0-4, see EVICTION_HELPER_PRIORITY_*)
+    int ActiveVRAMPriority;             // Priority for active VRAM (default: LOW)
+    int UnusedVRAMPriority;             // Priority for unused VRAM (default: MINIMUM)
+    int HeapPriority;                   // Priority for D3D12 heaps (default: NORMAL)
+
+    // Output - Active allocation state
     uint64_t CurrentVRAMAllocationBytes;
     uint32_t AllocatedRenderTargetCount;
+
+    // Output - Unused allocation state
+    uint64_t CurrentUnusedVRAMAllocationBytes;
+    uint32_t AllocatedUnusedRenderTargetCount;
 
     // Output - Local (VRAM) memory info
     uint64_t LocalBudget;
