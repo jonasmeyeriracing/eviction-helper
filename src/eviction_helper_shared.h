@@ -13,13 +13,18 @@
 struct EvictionHelperSharedData
 {
     // Input: Set this from the controlling application (in megabytes)
-    int TargetVRAMUsageMB;
-    int _padding1;
+    int TargetVRAMUsageMB;          // Memory that is actively used (rendered to each frame)
+    int TargetUnusedVRAMUsageMB;    // Memory that is allocated but not used
 
-    // Output: Current allocation state
+    // Output: Current allocation state (actively used)
     uint64_t CurrentVRAMAllocationBytes;
     uint32_t AllocatedRenderTargetCount;
     uint32_t _padding0;
+
+    // Output: Current allocation state (unused/idle)
+    uint64_t CurrentUnusedVRAMAllocationBytes;
+    uint32_t AllocatedUnusedRenderTargetCount;
+    uint32_t _padding2;
 
     // Output: DXGI_QUERY_VIDEO_MEMORY_INFO for local (VRAM) memory
     uint64_t LocalBudget;

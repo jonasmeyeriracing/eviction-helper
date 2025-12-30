@@ -65,6 +65,11 @@ struct VRAMRenderTarget {
 
 std::vector<VRAMRenderTarget> g_VRAMRenderTargets;
 ComPtr<ID3D12DescriptorHeap> g_VRAMRtvHeap;
+
+// Unused VRAM (allocated but not rendered to)
+std::vector<VRAMRenderTarget> g_UnusedVRAMRenderTargets;
+ComPtr<ID3D12DescriptorHeap> g_UnusedVRAMRtvHeap;
+
 constexpr UINT64 RENDER_TARGET_SIZE_MB = 64; // Each RT is 64MB (2048x2048 RGBA8)
 constexpr UINT RT_WIDTH = 2048;
 constexpr UINT RT_HEIGHT = 2048;
@@ -78,6 +83,14 @@ ComPtr<IDXGIAdapter3> g_Adapter;
 // Timing
 constexpr double TARGET_FRAME_TIME_MS = 1000.0 / 30.0; // 30 FPS
 
+// D3D12 Heap allocations (VRAM)
+constexpr UINT64 HEAP_512MB_SIZE = 512ULL * 1024ULL * 1024ULL;
+constexpr UINT64 HEAP_1GB_SIZE = 1024ULL * 1024ULL * 1024ULL;
+ComPtr<ID3D12Heap> g_Heap512MB;
+ComPtr<ID3D12Heap> g_Heap1GB;
+bool g_Allocate512MBHeap = false;
+bool g_Allocate1GBHeap = false;
+
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
@@ -87,6 +100,7 @@ void WaitForGpu();
 FrameContext* WaitForNextFrameResources();
 void CreateTrianglePipeline();
 void AllocateVRAMRenderTargets(UINT64 targetBytes);
+void AllocateUnusedVRAMRenderTargets(UINT64 targetBytes);
 void RenderToAllVRAMTargets();
 void QueryMemoryInfo();
 
@@ -196,6 +210,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
             AllocateVRAMRenderTargets(targetBytes);
         }
 
+        // Update unused VRAM allocation based on shared memory target (MB -> bytes)
+        UINT64 targetUnusedBytes = static_cast<UINT64>(g_SharedMem.pData->TargetUnusedVRAMUsageMB) * 1024ULL * 1024ULL;
+        if (targetUnusedBytes != g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes) {
+            AllocateUnusedVRAMRenderTargets(targetUnusedBytes);
+        }
+
         // Start ImGui frame
         ImGui_ImplDX12_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -204,12 +224,53 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         // ImGui window
         ImGui::Begin("VRAM Eviction Helper", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-        ImGui::Text("Target VRAM Usage:");
-        ImGui::SliderInt("MB", &g_SharedMem.pData->TargetVRAMUsageMB, 0, 16384, "%d MB");
+        ImGui::Text("Active VRAM (rendered each frame):");
+        ImGui::SliderInt("Active MB", &g_SharedMem.pData->TargetVRAMUsageMB, 0, 32<<10, "%d MB");
+
+        ImGui::Text("Unused VRAM (allocated but idle):");
+        ImGui::SliderInt("Unused MB", &g_SharedMem.pData->TargetUnusedVRAMUsageMB, 0, 32<<10, "%d MB");
 
         ImGui::Separator();
-        ImGui::Text("Allocated Render Targets: %u", g_SharedMem.pData->AllocatedRenderTargetCount);
-        ImGui::Text("Allocated VRAM: %.2f GB", g_SharedMem.pData->CurrentVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("D3D12 Heap Allocations (VRAM):");
+        if (ImGui::Checkbox("Allocate 512 MB Heap", &g_Allocate512MBHeap)) {
+            if (g_Allocate512MBHeap && !g_Heap512MB) {
+                D3D12_HEAP_DESC heapDesc = {};
+                heapDesc.SizeInBytes = HEAP_512MB_SIZE;
+                heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                heapDesc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+                heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+                g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap512MB));
+            } else if (!g_Allocate512MBHeap && g_Heap512MB) {
+                g_Heap512MB.Reset();
+            }
+        }
+        if (ImGui::Checkbox("Allocate 1 GB Heap", &g_Allocate1GBHeap)) {
+            if (g_Allocate1GBHeap && !g_Heap1GB) {
+                D3D12_HEAP_DESC heapDesc = {};
+                heapDesc.SizeInBytes = HEAP_1GB_SIZE;
+                heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                heapDesc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+                heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+                g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap1GB));
+            } else if (!g_Allocate1GBHeap && g_Heap1GB) {
+                g_Heap1GB.Reset();
+            }
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Active Render Targets: %u", g_SharedMem.pData->AllocatedRenderTargetCount);
+        ImGui::Text("Active VRAM: %.2f GB", g_SharedMem.pData->CurrentVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("Unused Render Targets: %u", g_SharedMem.pData->AllocatedUnusedRenderTargetCount);
+        ImGui::Text("Unused VRAM: %.2f GB", g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
+
+        // Calculate and display total memory usage
+        UINT64 heapAllocation = (g_Heap512MB ? HEAP_512MB_SIZE : 0) + (g_Heap1GB ? HEAP_1GB_SIZE : 0);
+        UINT64 totalMemory = g_SharedMem.pData->CurrentVRAMAllocationBytes +
+                             g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes +
+                             heapAllocation;
+        ImGui::Separator();
+        ImGui::Text("D3D12 Heap Allocation: %.2f GB", heapAllocation / (1024.0 * 1024.0 * 1024.0));
+        ImGui::Text("Total VRAM Usage: %.2f GB", totalMemory / (1024.0 * 1024.0 * 1024.0));
 
         ImGui::Separator();
         ImGui::Text("Video Memory Info (Local/VRAM):");
@@ -307,8 +368,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
+    // Cleanup D3D12 heap allocations
+    g_Heap512MB.Reset();
+    g_Heap1GB.Reset();
+
     g_VRAMRenderTargets.clear();
     g_VRAMRtvHeap.Reset();
+    g_UnusedVRAMRenderTargets.clear();
+    g_UnusedVRAMRtvHeap.Reset();
     CleanupDeviceD3D();
 
     // Cleanup shared memory
@@ -708,7 +775,7 @@ void AllocateVRAMRenderTargets(UINT64 targetBytes)
 
         // Set residency priority to HIGH
         ID3D12Pageable* pageable = vramRT.Resource.Get();
-        D3D12_RESIDENCY_PRIORITY priority = D3D12_RESIDENCY_PRIORITY_HIGH;
+        D3D12_RESIDENCY_PRIORITY priority = D3D12_RESIDENCY_PRIORITY_LOW;
         g_Device->SetResidencyPriority(1, &pageable, &priority);
 
         // Create RTV
@@ -724,6 +791,113 @@ void AllocateVRAMRenderTargets(UINT64 targetBytes)
     if (g_SharedMem.pData) {
         g_SharedMem.pData->CurrentVRAMAllocationBytes = g_VRAMRenderTargets.size() * rtSize;
         g_SharedMem.pData->AllocatedRenderTargetCount = static_cast<uint32_t>(g_VRAMRenderTargets.size());
+    }
+}
+
+void AllocateUnusedVRAMRenderTargets(UINT64 targetBytes)
+{
+    WaitForGpu();
+
+    // Calculate how many render targets we need
+    // Each RT is RT_WIDTH x RT_HEIGHT x 4 bytes (RGBA8)
+    UINT64 rtSize = RT_WIDTH * RT_HEIGHT * 4;
+    size_t targetCount = (targetBytes > 0) ? static_cast<size_t>((targetBytes + rtSize - 1) / rtSize) : 0;
+
+    // Release excess render targets
+    while (g_UnusedVRAMRenderTargets.size() > targetCount) {
+        g_UnusedVRAMRenderTargets.pop_back();
+    }
+
+    // Recreate RTV heap if we need more descriptors
+    if (targetCount > 0) {
+        size_t currentHeapSize = 0;
+        if (g_UnusedVRAMRtvHeap) {
+            currentHeapSize = g_UnusedVRAMRtvHeap->GetDesc().NumDescriptors;
+        }
+
+        if (targetCount > currentHeapSize) {
+            // Need a bigger heap - save existing resources
+            std::vector<ComPtr<ID3D12Resource>> existingResources;
+            for (auto& rt : g_UnusedVRAMRenderTargets) {
+                existingResources.push_back(rt.Resource);
+            }
+            g_UnusedVRAMRenderTargets.clear();
+            g_UnusedVRAMRtvHeap.Reset();
+
+            // Create new heap
+            D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+            heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+            heapDesc.NumDescriptors = static_cast<UINT>(targetCount + 64); // Add some padding
+            g_Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&g_UnusedVRAMRtvHeap));
+
+            // Restore existing resources with new RTV handles
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_UnusedVRAMRtvHeap->GetCPUDescriptorHandleForHeapStart();
+            for (auto& resource : existingResources) {
+                VRAMRenderTarget vramRT;
+                vramRT.Resource = resource;
+                vramRT.RtvHandle = rtvHandle;
+                g_Device->CreateRenderTargetView(resource.Get(), nullptr, rtvHandle);
+                g_UnusedVRAMRenderTargets.push_back(std::move(vramRT));
+                rtvHandle.ptr += g_RtvDescriptorSize;
+            }
+        }
+    }
+
+    // Allocate new render targets
+    while (g_UnusedVRAMRenderTargets.size() < targetCount) {
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        D3D12_RESOURCE_DESC texDesc = {};
+        texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Width = RT_WIDTH;
+        texDesc.Height = RT_HEIGHT;
+        texDesc.DepthOrArraySize = 1;
+        texDesc.MipLevels = 1;
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        D3D12_CLEAR_VALUE clearValue = {};
+        clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        clearValue.Color[0] = 0.0f;
+        clearValue.Color[1] = 0.0f;
+        clearValue.Color[2] = 0.0f;
+        clearValue.Color[3] = 1.0f;
+
+        VRAMRenderTarget vramRT;
+        HRESULT hr = g_Device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            &clearValue,
+            IID_PPV_ARGS(&vramRT.Resource)
+        );
+
+        if (FAILED(hr)) {
+            // Out of VRAM, stop allocating
+            break;
+        }
+
+        // Set residency priority to NORMAL (unused memory can be evicted more easily)
+        ID3D12Pageable* pageable = vramRT.Resource.Get();
+        D3D12_RESIDENCY_PRIORITY priority = D3D12_RESIDENCY_PRIORITY_MINIMUM;
+        g_Device->SetResidencyPriority(1, &pageable, &priority);
+
+        // Create RTV
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_UnusedVRAMRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        rtvHandle.ptr += g_UnusedVRAMRenderTargets.size() * g_RtvDescriptorSize;
+        vramRT.RtvHandle = rtvHandle;
+        g_Device->CreateRenderTargetView(vramRT.Resource.Get(), nullptr, rtvHandle);
+
+        g_UnusedVRAMRenderTargets.push_back(std::move(vramRT));
+    }
+
+    // Update shared memory with current allocation
+    if (g_SharedMem.pData) {
+        g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes = g_UnusedVRAMRenderTargets.size() * rtSize;
+        g_SharedMem.pData->AllocatedUnusedRenderTargetCount = static_cast<uint32_t>(g_UnusedVRAMRenderTargets.size());
     }
 }
 
