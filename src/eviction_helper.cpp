@@ -31,6 +31,9 @@ constexpr UINT NUM_FRAMES	 = 2;
 #define EVICTION_HELPER_DEFAULT_ACTIVE EVICTION_HELPER_PRIORITY_HIGH
 #define EVICTION_HELPER_DEFAULT_UNUSED EVICTION_HELPER_PRIORITY_NORMAL
 
+// Command line options
+bool g_EnableDebugLayer = false;
+
 // Forward declarations
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK			  WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -143,8 +146,14 @@ void		  AllocateUnusedVRAMRenderTargets(UINT64 targetBytes);
 void		  RenderToAllVRAMTargets();
 void		  QueryMemoryInfo();
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow)
 {
+	// Parse command line arguments
+	if(lpCmdLine && strstr(lpCmdLine, "-debug"))
+	{
+		g_EnableDebugLayer = true;
+	}
+
 	// Create shared memory for inter-process communication
 	if(!EvictionHelper_CreateSharedMemory(&g_SharedMem))
 	{
@@ -463,6 +472,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 bool CreateDeviceD3D(HWND hWnd)
 {
+	// Enable debug layer if requested
+	if(g_EnableDebugLayer)
+	{
+		ComPtr<ID3D12Debug> debugController;
+		if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
+		{
+			debugController->EnableDebugLayer();
+		}
+	}
+
 	// Create DXGI Factory
 	ComPtr<IDXGIFactory4> factory;
 	if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
@@ -977,12 +996,12 @@ void RenderToAllVRAMTargets()
 		return;
 
 	// Simple clear operation to each render target to ensure they stay resident
-	const float clearColors[][4] = { { 0.2f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.2f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.2f, 1.0f }, { 0.2f, 0.2f, 0.0f, 1.0f } };
+	// Use the same color as D3D12_CLEAR_VALUE when creating the resources to avoid debug warnings
+	const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 	for(size_t i = 0; i < g_VRAMRenderTargets.size(); i++)
 	{
-		const float* color = clearColors[i % 4];
-		g_CommandList->ClearRenderTargetView(g_VRAMRenderTargets[i].RtvHandle, color, 0, nullptr);
+		g_CommandList->ClearRenderTargetView(g_VRAMRenderTargets[i].RtvHandle, clearColor, 0, nullptr);
 	}
 }
 
