@@ -2,6 +2,8 @@
 
 A D3D12 application for testing VRAM eviction behavior on Windows. Allocates a configurable amount of GPU memory to influence the memory budget of other applications.
 
+The application can be controlled from another process via shared memory, allowing you to integrate VRAM pressure testing into your own applications. A reusable ImGui UI component is provided for embedding the control interface directly into your application's UI.
+
 ## Features
 
 - Allocates offscreen render targets to consume VRAM (0-16 GB configurable)
@@ -77,6 +79,39 @@ if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
     EvictionHelper_CloseSharedMemory(&sharedMem);
 }
 ```
+
+### Embedding the ImGui UI in your application
+
+If your application uses Dear ImGui, you can embed the full eviction-helper control UI directly into your application. Include both header files and call `EvictionHelper_RenderImGui()` between your `ImGui::Begin()` and `ImGui::End()` calls:
+
+```cpp
+#include "eviction_helper_shared.h"
+#include "eviction_helper_imgui.h"
+
+// During initialization
+EvictionHelperSharedMemory sharedMem = {};
+bool connected = EvictionHelper_OpenSharedMemory(&sharedMem);
+
+// In your render loop
+if (connected && sharedMem.pData->IsRunning) {
+    ImGui::Begin("VRAM Eviction Helper");
+    EvictionHelper_RenderImGui(sharedMem.pData);
+    ImGui::End();
+}
+
+// During shutdown
+EvictionHelper_CloseSharedMemory(&sharedMem);
+```
+
+The `EvictionHelper_RenderImGui()` function renders:
+- Active VRAM controls (priority dropdown + MB slider)
+- Unused VRAM controls (priority dropdown + MB slider)
+- D3D12 Heap allocation checkboxes (512 MB / 1 GB)
+- Memory usage statistics
+- Memory breakdown by priority level
+- DXGI video memory info (local and non-local)
+
+The function does not call `ImGui::Begin()`/`ImGui::End()`, so you can add additional widgets before or after calling it, or embed it within an existing window.
 
 ## Shared Memory Structure
 
