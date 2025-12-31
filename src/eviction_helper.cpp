@@ -18,6 +18,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx12.h"
 #include "eviction_helper_shared.h"
+#include "eviction_helper_imgui.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -29,8 +30,6 @@ constexpr UINT NUM_FRAMES	 = 2;
 
 #define EVICTION_HELPER_DEFAULT_ACTIVE EVICTION_HELPER_PRIORITY_HIGH
 #define EVICTION_HELPER_DEFAULT_UNUSED EVICTION_HELPER_PRIORITY_NORMAL
-
-
 
 // Forward declarations
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -95,15 +94,10 @@ constexpr UINT64   HEAP_512MB_SIZE = 512ULL * 1024ULL * 1024ULL;
 constexpr UINT64   HEAP_1GB_SIZE   = 1024ULL * 1024ULL * 1024ULL;
 ComPtr<ID3D12Heap> g_Heap512MB;
 ComPtr<ID3D12Heap> g_Heap1GB;
-bool			   g_Allocate512MBHeap = false;
-bool			   g_Allocate1GBHeap   = false;
 
 // Priority tracking for detecting changes
 int g_CurrentActiveVRAMPriority = EVICTION_HELPER_DEFAULT_ACTIVE;
 int g_CurrentUnusedVRAMPriority = EVICTION_HELPER_DEFAULT_UNUSED;
-
-// Priority names for ImGui combo
-const char* g_PriorityNames[] = { "Minimum", "Low", "Normal", "High", "Maximum" };
 
 // Convert index to D3D12_RESIDENCY_PRIORITY
 D3D12_RESIDENCY_PRIORITY IndexToPriority(int index)
@@ -160,7 +154,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 	g_SharedMem.pData->IsRunning = 1;
 
 	// Initialize default priority values
-	g_SharedMem.pData->ActiveVRAMPriority = EVICTION_HELPER_DEFAULT_ACTIVE ;
+	g_SharedMem.pData->ActiveVRAMPriority = EVICTION_HELPER_DEFAULT_ACTIVE;
 	g_SharedMem.pData->UnusedVRAMPriority = EVICTION_HELPER_DEFAULT_UNUSED;
 
 	// Register window class
@@ -293,109 +287,58 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 			}
 		}
 
+		// Handle D3D12 heap allocation based on shared memory flags
+		if(g_SharedMem.pData->Allocate512MBHeap && !g_Heap512MB)
+		{
+			D3D12_HEAP_DESC heapDesc = {};
+			heapDesc.SizeInBytes	 = HEAP_512MB_SIZE;
+			heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+			heapDesc.Alignment		 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+			heapDesc.Flags			 = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+			g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap512MB));
+			if(g_Heap512MB)
+			{
+				ID3D12Pageable*			 pageable = g_Heap512MB.Get();
+				D3D12_RESIDENCY_PRIORITY priority = IndexToPriority(g_SharedMem.pData->UnusedVRAMPriority);
+				g_Device->SetResidencyPriority(1, &pageable, &priority);
+			}
+		}
+		else if(!g_SharedMem.pData->Allocate512MBHeap && g_Heap512MB)
+		{
+			g_Heap512MB.Reset();
+		}
+
+		if(g_SharedMem.pData->Allocate1GBHeap && !g_Heap1GB)
+		{
+			D3D12_HEAP_DESC heapDesc = {};
+			heapDesc.SizeInBytes	 = HEAP_1GB_SIZE;
+			heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+			heapDesc.Alignment		 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+			heapDesc.Flags			 = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+			g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap1GB));
+			if(g_Heap1GB)
+			{
+				ID3D12Pageable*			 pageable = g_Heap1GB.Get();
+				D3D12_RESIDENCY_PRIORITY priority = IndexToPriority(g_SharedMem.pData->UnusedVRAMPriority);
+				g_Device->SetResidencyPriority(1, &pageable, &priority);
+			}
+		}
+		else if(!g_SharedMem.pData->Allocate1GBHeap && g_Heap1GB)
+		{
+			g_Heap1GB.Reset();
+		}
+
+		// Update current heap allocation in shared memory
+		g_SharedMem.pData->CurrentHeapAllocationBytes = (g_Heap512MB ? HEAP_512MB_SIZE : 0) + (g_Heap1GB ? HEAP_1GB_SIZE : 0);
+
 		// Start ImGui frame
 		ImGui_ImplDX12_NewFrame();
 		ImGui_ImplWin32_NewFrame();
 		ImGui::NewFrame();
 
-		// ImGui window
+		// ImGui window - use shared function for UI that can be used from remote applications
 		ImGui::Begin("VRAM Eviction Helper", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-
-		ImGui::SeparatorText("Active VRAM (rendered each frame):");
-		ImGui::Combo("Active Priority", &g_SharedMem.pData->ActiveVRAMPriority, g_PriorityNames, IM_ARRAYSIZE(g_PriorityNames));
-		ImGui::SliderInt("Active MB", &g_SharedMem.pData->TargetVRAMUsageMB, 0, 32 << 10, "%d MB");
-
-		ImGui::SeparatorText("Unused VRAM (allocated but idle):");
-		ImGui::Combo("Unused Priority", &g_SharedMem.pData->UnusedVRAMPriority, g_PriorityNames, IM_ARRAYSIZE(g_PriorityNames));
-		ImGui::SliderInt("Unused MB", &g_SharedMem.pData->TargetUnusedVRAMUsageMB, 0, 32 << 10, "%d MB");
-		if(ImGui::Checkbox("Allocate 512 MB Heap", &g_Allocate512MBHeap))
-		{
-			if(g_Allocate512MBHeap && !g_Heap512MB)
-			{
-				D3D12_HEAP_DESC heapDesc = {};
-				heapDesc.SizeInBytes	 = HEAP_512MB_SIZE;
-				heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-				heapDesc.Alignment		 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-				heapDesc.Flags			 = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
-				g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap512MB));
-				if(g_Heap512MB)
-				{
-					ID3D12Pageable*			 pageable = g_Heap512MB.Get();
-					D3D12_RESIDENCY_PRIORITY priority = IndexToPriority(g_SharedMem.pData->UnusedVRAMPriority);
-					g_Device->SetResidencyPriority(1, &pageable, &priority);
-				}
-			}
-			else if(!g_Allocate512MBHeap && g_Heap512MB)
-			{
-				g_Heap512MB.Reset();
-			}
-		}
-		if(ImGui::Checkbox("Allocate 1 GB Heap", &g_Allocate1GBHeap))
-		{
-			if(g_Allocate1GBHeap && !g_Heap1GB)
-			{
-				D3D12_HEAP_DESC heapDesc = {};
-				heapDesc.SizeInBytes	 = HEAP_1GB_SIZE;
-				heapDesc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-				heapDesc.Alignment		 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-				heapDesc.Flags			 = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
-				g_Device->CreateHeap(&heapDesc, IID_PPV_ARGS(&g_Heap1GB));
-				if(g_Heap1GB)
-				{
-					ID3D12Pageable*			 pageable = g_Heap1GB.Get();
-					D3D12_RESIDENCY_PRIORITY priority = IndexToPriority(g_SharedMem.pData->UnusedVRAMPriority);
-					g_Device->SetResidencyPriority(1, &pageable, &priority);
-				}
-			}
-			else if(!g_Allocate1GBHeap && g_Heap1GB)
-			{
-				g_Heap1GB.Reset();
-			}
-		}
-		// ImGui::Combo("Heap Priority", &g_SharedMem.pData->HeapPriority, g_PriorityNames, IM_ARRAYSIZE(g_PriorityNames));
-
-		ImGui::SeparatorText("Memory Usage");
-		UINT64 heapAllocation = (g_Heap512MB ? HEAP_512MB_SIZE : 0) + (g_Heap1GB ? HEAP_1GB_SIZE : 0);
-		// Calculate and display total memory usage
-		UINT64 totalMemory = g_SharedMem.pData->CurrentVRAMAllocationBytes + g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes + heapAllocation;
-		ImGui::Text("Active Render Targets: %u", g_SharedMem.pData->AllocatedRenderTargetCount);
-		ImGui::Text("Active VRAM: %.2f GB", g_SharedMem.pData->CurrentVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("Unused Render Targets: %u", g_SharedMem.pData->AllocatedUnusedRenderTargetCount);
-		ImGui::Text("Unused VRAM: %.2f GB", g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("Unused Heaps: %.2f GB", heapAllocation / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("Total VRAM Usage: %.2f GB", totalMemory / (1024.0 * 1024.0 * 1024.0));
-
-		// Calculate memory by priority level
-		UINT64 memoryByPriority[5] = { 0, 0, 0, 0, 0 };
-		int	   activePri		   = std::clamp(g_SharedMem.pData->ActiveVRAMPriority, 0, 4);
-		int	   unusedPri		   = std::clamp(g_SharedMem.pData->UnusedVRAMPriority, 0, 4);
-		memoryByPriority[activePri] += g_SharedMem.pData->CurrentVRAMAllocationBytes;
-		memoryByPriority[unusedPri] += g_SharedMem.pData->CurrentUnusedVRAMAllocationBytes;
-		memoryByPriority[unusedPri] += heapAllocation;
-
-		ImGui::SeparatorText("Memory by Priority");
-		// ImGui::Text("Memory by Priority:");
-		for(int i = 0; i < 5; i++)
-		{
-			if(memoryByPriority[i] > 0)
-			{
-				ImGui::Text("  %s: %.2f GB", g_PriorityNames[i], memoryByPriority[i] / (1024.0 * 1024.0 * 1024.0));
-			}
-		}
-
-		ImGui::SeparatorText("Video Memory Info");
-		ImGui::Text("Local:");
-		ImGui::Text("  Budget: %.2f GB", g_SharedMem.pData->LocalBudget / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Current Usage: %.2f GB", g_SharedMem.pData->LocalCurrentUsage / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Available for Reservation: %.2f GB", g_SharedMem.pData->LocalAvailableForReservation / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Current Reservation: %.2f GB", g_SharedMem.pData->LocalCurrentReservation / (1024.0 * 1024.0 * 1024.0));
-
-		ImGui::Text("Non-Local:");
-		ImGui::Text("  Budget: %.2f GB", g_SharedMem.pData->NonLocalBudget / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Current Usage: %.2f GB", g_SharedMem.pData->NonLocalCurrentUsage / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Available for Reservation: %.2f GB", g_SharedMem.pData->NonLocalAvailableForReservation / (1024.0 * 1024.0 * 1024.0));
-		ImGui::Text("  Current Reservation: %.2f GB", g_SharedMem.pData->NonLocalCurrentReservation / (1024.0 * 1024.0 * 1024.0));
-
+		EvictionHelper_RenderImGui(g_SharedMem.pData);
 		ImGui::End();
 
 		ImGui::Render();

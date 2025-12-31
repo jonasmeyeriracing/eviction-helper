@@ -28,6 +28,10 @@ struct EvictionHelperSharedData
     int ActiveVRAMPriority;         // Priority for active VRAM (default: HIGH)
     int UnusedVRAMPriority;         // Priority for unused VRAM (default: NORMAL)
 
+    // Input: D3D12 Heap allocation flags
+    int Allocate512MBHeap;          // Set to 1 to allocate a 512 MB heap
+    int Allocate1GBHeap;            // Set to 1 to allocate a 1 GB heap
+
     // Output: Current allocation state (actively used)
     uint64_t CurrentVRAMAllocationBytes;
     uint32_t AllocatedRenderTargetCount;
@@ -37,6 +41,9 @@ struct EvictionHelperSharedData
     uint64_t CurrentUnusedVRAMAllocationBytes;
     uint32_t AllocatedUnusedRenderTargetCount;
     uint32_t _padding2;
+
+    // Output: Current heap allocation
+    uint64_t CurrentHeapAllocationBytes;
 
     // Output: DXGI_QUERY_VIDEO_MEMORY_INFO for local (VRAM) memory
     uint64_t LocalBudget;

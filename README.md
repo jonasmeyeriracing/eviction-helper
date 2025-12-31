@@ -50,7 +50,10 @@ if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
     // Set residency priorities (0=Minimum, 1=Low, 2=Normal, 3=High, 4=Maximum)
     sharedMem.pData->ActiveVRAMPriority = EVICTION_HELPER_PRIORITY_HIGH;
     sharedMem.pData->UnusedVRAMPriority = EVICTION_HELPER_PRIORITY_MINIMUM;
-    sharedMem.pData->HeapPriority = EVICTION_HELPER_PRIORITY_NORMAL;
+
+    // Allocate D3D12 heaps
+    sharedMem.pData->Allocate512MBHeap = 1;  // Allocate 512 MB heap
+    sharedMem.pData->Allocate1GBHeap = 0;    // Don't allocate 1 GB heap
 
     // Read current state
     printf("Current VRAM usage: %llu bytes\n", sharedMem.pData->LocalCurrentUsage);
@@ -61,6 +64,7 @@ if (EvictionHelper_OpenSharedMemory(&sharedMem)) {
     printf("Unused: %llu bytes in %u render targets\n",
            sharedMem.pData->CurrentUnusedVRAMAllocationBytes,
            sharedMem.pData->AllocatedUnusedRenderTargetCount);
+    printf("Heaps: %llu bytes\n", sharedMem.pData->CurrentHeapAllocationBytes);
 
     // Verify app is running by checking frame counter changes
     uint64_t lastFrame = sharedMem.pData->FrameCount;
@@ -93,9 +97,12 @@ struct EvictionHelperSharedData
     int TargetUnusedVRAMUsageMB;        // Unused VRAM allocation in MB (allocated but idle)
 
     // Input - Residency priorities (0-4, see EVICTION_HELPER_PRIORITY_*)
-    int ActiveVRAMPriority;             // Priority for active VRAM (default: LOW)
-    int UnusedVRAMPriority;             // Priority for unused VRAM (default: MINIMUM)
-    int HeapPriority;                   // Priority for D3D12 heaps (default: NORMAL)
+    int ActiveVRAMPriority;             // Priority for active VRAM (default: HIGH)
+    int UnusedVRAMPriority;             // Priority for unused VRAM (default: NORMAL)
+
+    // Input - D3D12 Heap allocation flags
+    int Allocate512MBHeap;              // Set to 1 to allocate a 512 MB heap
+    int Allocate1GBHeap;                // Set to 1 to allocate a 1 GB heap
 
     // Output - Active allocation state
     uint64_t CurrentVRAMAllocationBytes;
@@ -104,6 +111,9 @@ struct EvictionHelperSharedData
     // Output - Unused allocation state
     uint64_t CurrentUnusedVRAMAllocationBytes;
     uint32_t AllocatedUnusedRenderTargetCount;
+
+    // Output - Current heap allocation
+    uint64_t CurrentHeapAllocationBytes;
 
     // Output - Local (VRAM) memory info
     uint64_t LocalBudget;
